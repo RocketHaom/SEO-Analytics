@@ -4,6 +4,11 @@ import nltk
 from nltk.tokenize import word_tokenize
 nltk.download('stopwords')
 nltk.download('punkt')
+from urllib.parse import urlparse
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 #Bibliografía:
 #https://www.danielherediamejias.com/guide-seo-onpage-scraping-python/
@@ -30,6 +35,19 @@ if response.status_code != 200:
     print("El servidor no está en línea o no se puede acceder a él")
     exit(1)
 content = response.content
+
+driver = webdriver.Chrome()
+
+# Cargar la página web
+driver.get(url)
+
+# Esperar a que se cargue la página web y obtiene el HTML
+wait = WebDriverWait(driver, 10)
+wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+html = driver.page_source
+
+# Cerrar el navegador
+driver.quit()
 
 # Crear objeto BeautifulSoup con el contenido obtenido
 soup = BeautifulSoup(content, "html.parser")
@@ -99,7 +117,7 @@ else:
 
 
 # Mostrar el título de la página y la cantidad de letras que tiene
-if (len(title) >65 and len(title)<30 ):
+if (len(title) <=65 and len(title)>=30 ):
     buenasPracticas.append({"Titulo": f"Title: {title}.", "Valor":f"({len(title)} carácteres)", "Descripcion" : "El título se encuentra configurado. El largo debe ser entre 30 y 65 caracteres."})
 else:
     malasPracticas.append({"Titulo": f"Title: {title}.", "Valor":f"({len(title)} carácteres)", "Descripcion" : "El título no cumple con la configuración. El largo debe ser entre 30 y 65 caracteres."})
@@ -191,17 +209,64 @@ else:
     # buenasPracticas.append(f"Imágenes: {total_images_count}\nLas imagenes cuentan con todos sus atributos definidos.")
 
 # Identificar enlaces internos
-internal_links = [[a.get_text(), a["href"], "nofollow" if "nofollow" in str(a) else "follow", "title" in a.attrs] for a in soup.find_all('a', href=True) if url in a["href"] or a["href"].startswith("/")]
+internal_links = []
+total_links_count = 0
+
+# Buscar enlaces internos en los elementos HTML
+for element in soup.find_all(['a', 'button', 'div', 'nav', 'article', 'section'], href=True):
+    total_links_count += 1
+    href = element['href']
+    link_text = element.get_text()
+    link_classes = element.get('class', [])
+
+    if not href.startswith(('http://', 'https://', '//')):
+        # Enlace interno
+        if href.startswith('/'):
+            full_link = url + href
+        else:
+            full_link = f"{url}/{href.lstrip('/')}"
+        is_follow = "nofollow" if "nofollow" in str(element) else "follow"
+        has_title = "title" in element.attrs
+        internal_links.append([link_text, full_link, is_follow, has_title])
+    elif url in href:
+        # Enlace interno usando URL absoluta
+        is_follow = "nofollow" if "nofollow" in str(element) else "follow"
+        has_title = "title" in element.attrs
+        internal_links.append([link_text, href, is_follow, has_title])
+    elif 'example.com' in href or 'example.com' in link_text:
+        # Enlace interno con dominio example.com
+        is_follow = "nofollow" if "nofollow" in str(element) else "follow"
+        has_title = "title" in element.attrs
+        internal_links.append([link_text, href, is_follow, has_title])
+
 number_internal_links = len(internal_links)
 links_with_title_count = sum(1 for link in internal_links if link[3])
-if number_internal_links==links_with_title_count:
+
+# Evaluar si todos los enlaces internos tienen el atributo "title"
+if number_internal_links == links_with_title_count:
     buenasPracticas.append({"Titulo":"Links internos: ", "Valor":f"{number_internal_links}", "Descripcion":f"Todos los links cuentan con el atributo TITLE ({links_with_title_count} de {number_internal_links})."})
 else:
     malasPracticas.append({"Titulo":"Links internos: ", "Valor":f"{number_internal_links}", "Descripcion":f"Algunos links no cuentan con el atributo TITLE ({links_with_title_count} de {number_internal_links})."})
 
+# Almacenar la cantidad total de enlaces internos encontrados
+total_links_count = len(internal_links)
+
 # Identificar enlaces externos
-external_links = [[a.get_text(), a["href"], "nofollow"] if "nofollow" in str(a) else [a.get_text(), a["href"], "follow"] for a in soup.find_all('a', href=True) if url not in a["href"] and not a["href"].startswith("/")]
+external_links = []
+for a in soup.find_all('a', href=True):
+    if urlparse(a["href"]).scheme and urlparse(a["href"]).netloc and urlparse(a["href"]).netloc != urlparse(url).netloc:
+        rel_attrs = a.get("rel")
+        target_attr = a.get("target")
+        if rel_attrs and "noopener" in rel_attrs and "noreferrer" in rel_attrs:
+            external_links.append([a.get_text(), a["href"], "noopener noreferrer"])
+        elif target_attr and target_attr == "_blank":
+            external_links.append([a.get_text(), a["href"], "target_blank"])
+        else:
+            external_links.append([a.get_text(), a["href"], "follow"])
+
 number_external_links = len(external_links)
+total_links_count += number_external_links
+
 if number_external_links > 0:
     buenasPracticas.append({"Titulo":"Links externos: ", "Valor":f"{number_external_links}", "Descripcion" : f"Existen {number_external_links} links a otras entidades fuera de la organización"})
     totalPractica += 1
@@ -210,22 +275,24 @@ else:
 
 # Contar la cantidad de enlaces rotos
 broken_links_count = 0
+total_links_count = 0
+
 for link in soup.find_all("a"):
     if link.has_attr("href"):
+        total_links_count += 1
         try:
             response = requests.get(link["href"])
             if response.status_code >= 400:
                 broken_links_count += 1
         except:
             broken_links_count += 1
+
 if broken_links_count != 0:
     malasPracticas.append({"Titulo" : "Links Rotos: ", "Valor" : f"{broken_links_count}", "Descripcion" : f"Existen {broken_links_count} links que no están definidos."})
 else:
     totalPractica += 1
     buenasPracticas.append({"Titulo" : "Links Rotos: ", "Valor" :  f"{broken_links_count}", "Descripcion" : "Todos los links están definidos."})
 
-# Contar la cantidad total de enlaces
-total_links_count = len(soup.find_all("a"))
 
 # Verificar si hay redireccionamiento 301
 redirection = False
@@ -349,6 +416,8 @@ if promedio.is_integer():
     print("Tienes un promedio de optimización de: {:.0f}/10".format(promedio))
 else:
     print("Tienes un promedio de optimización de: {:.1f}/10".format(promedio))
+
+print(total_links_count)
 
 print("\nBuenas prácticas:\n")
 for item in buenasPracticas:
